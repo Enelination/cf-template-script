@@ -1,0 +1,97 @@
+Resources:
+  # Define the AWS Lambda function
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ExportRDSBackupsToS3
+      Runtime: python3.8
+      Handler: lambda_function.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+
+          def lambda_handler(event, context):
+              # Define your AWS region
+              region = 'us-west-2'  # Update with your desired region
+
+              # Define the name of your RDS instance
+              rds_instance_name = 'enel1'  # Update with your RDS instance name
+
+              # Define the name of your S3 bucket
+              s3_bucket_name = 'enel'  # Update with your S3 bucket name
+
+              # Create an RDS client
+              rds_client = boto3.client('rds', region_name=region)
+
+              # Create an S3 client
+              s3_client = boto3.client('s3', region_name=region)
+
+              try:
+                  # Retrieve a list of available DB snapshots for the RDS instance
+                  snapshots = rds_client.describe_db_snapshots(
+                      DBInstanceIdentifier=rds_instance_name,
+                      SnapshotType='automated'
+                  )['DBSnapshots']
+
+                  # Export each DB snapshot to S3
+                  for snapshot in snapshots:
+                      snapshot_name = snapshot['DBSnapshotIdentifier']
+                      s3_object_key = f'rds-backups/{snapshot_name}.sql.gz'
+
+                      # Export the DB snapshot to S3
+                      s3_client.upload_fileobj(
+                          rds_client.describe_db_snapshot_attributes(DBSnapshotIdentifier=snapshot_name)['DBSnapshotAttributesResult']['DBSnapshotAttributes'][0]['AttributeValues'][0]['AttributeValue'],
+                          s3_bucket_name,
+                          s3_object_key
+                      )
+
+                      print(f'Successfully exported snapshot {snapshot_name} to S3: s3://{s3_bucket_name}/{s3_object_key}')
+
+              except Exception as e:
+                  print(f'Error exporting RDS snapshots: {str(e)}')
+                  raise e
+
+      Role: !Ref LambdaRole
+
+  # Define the IAM role for the Lambda function
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RDSAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBSnapshots
+                  - rds:DescribeDBSnapshotAttributes
+                Resource: arn:aws:rds:*:*:snapshot:*
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: arn:aws:s3:::enel/*
+
+  # Define the CloudWatch Events rule
+  CloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ExportRDSBackupsToS3Schedule
+      ScheduleExpression: rate(1 day)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn
+          Id: ExportRDSBackupsToS3Target
